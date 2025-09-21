@@ -92,12 +92,23 @@ def load_model():
                 self.transformers.requires_grad_(False)
                 self.dcae.requires_grad_(False)
                 self.text_encoder_model.requires_grad_(False)
+
+                # Initialize scheduler exactly like trainer-api.py
+                self.scheduler = FlowMatchEulerDiscreteScheduler(
+                    num_train_timesteps=1000,
+                    shift=3.0,
+                )
                 
-            def get_text_embeddings(self, prompts, device):
-                """Get text embeddings from prompts"""
+            def get_text_embeddings(self, texts, device, text_max_length=256):
+                """Get text embeddings from prompts - exactly like trainer-api.py"""
                 inputs = self.text_tokenizer(
-                    prompts, max_length=256, padding=True, truncation=True, return_tensors="pt"
-                ).to(device)
+                    texts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=text_max_length,
+                )
+                inputs = {key: value.to(device) for key, value in inputs.items()}
                 with torch.no_grad():
                     outputs = self.text_encoder_model(**inputs)
                     last_hidden_states = outputs.last_hidden_state
@@ -116,7 +127,7 @@ def load_model():
                     speaker_embds=speaker_embds,
                     lyric_token_ids=lyric_token_ids,
                     lyric_mask=lyric_mask,
-                    random_generators=random_generator,
+                    random_generators=[random_generator] if random_generator else None,
                     infer_steps=infer_steps,
                     guidance_scale=guidance_scale,
                     omega_scale=omega_scale,
