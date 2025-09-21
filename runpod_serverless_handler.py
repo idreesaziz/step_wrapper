@@ -139,7 +139,7 @@ def load_model():
 
                 # Get text embeddings
                 encoder_text_hidden_states, text_attention_mask = self.get_text_embeddings(
-                    [prompt], self.device
+                    prompt, self.device
                 )
 
                 # Dummy speaker embeddings and lyrics (since not provided in API request)
