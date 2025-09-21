@@ -36,7 +36,8 @@ COPY runpod_serverless_requirements.txt .
 
 # Install the Python package requirements
 RUN pip3 install --no-cache-dir -r requirements.txt && \
-    pip3 install --no-cache-dir -r runpod_serverless_requirements.txt
+    pip3 install --no-cache-dir -r runpod_serverless_requirements.txt && \
+    pip3 install --no-cache-dir hf_transfer
 
 # Clone and install the ACE-Step repository
 RUN git clone https://github.com/ace-step/ACE-Step.git && \
