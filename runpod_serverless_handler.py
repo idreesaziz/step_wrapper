@@ -75,14 +75,18 @@ def load_model():
                 self.device = torch.device(device if torch.cuda.is_available() else "cpu")
                 logger.info(f"Initializing model on device: {self.device}")
 
-                # Load the ACEStepPipeline
+                # Load the ACEStepPipeline with consistent dtype
                 self.acestep_pipeline = ACEStepPipeline(checkpoint_dir)
                 self.acestep_pipeline.load_checkpoint(checkpoint_dir)
+                
+                # Get the pipeline's dtype for consistency
+                self.dtype = self.acestep_pipeline.dtype
+                logger.info(f"Using model dtype: {self.dtype}")
 
-                # Initialize components
-                self.transformers = self.acestep_pipeline.ace_step_transformer.float().to(self.device).eval()
-                self.dcae = self.acestep_pipeline.music_dcae.float().to(self.device).eval()
-                self.text_encoder_model = self.acestep_pipeline.text_encoder_model.float().to(self.device).eval()
+                # Initialize components with consistent dtype (don't force float conversion)
+                self.transformers = self.acestep_pipeline.ace_step_transformer.to(self.device).eval()
+                self.dcae = self.acestep_pipeline.music_dcae.to(self.device).eval() 
+                self.text_encoder_model = self.acestep_pipeline.text_encoder_model.to(self.device).eval()
                 self.text_tokenizer = self.acestep_pipeline.text_tokenizer
 
                 # Initialize scheduler
@@ -173,8 +177,8 @@ def load_model():
                     omega_scale=omega_scale,
                 )
 
-                # Decode latents to audio
-                audio_lengths = torch.tensor([int(duration * 44100)], device=self.device)
+                # Decode latents to audio  
+                audio_lengths = torch.tensor([int(duration * 44100)], device=self.device, dtype=torch.long)
                 sr, pred_wavs = self.dcae.decode(pred_latents, audio_lengths=audio_lengths, sr=48000)
 
                 # Save audio
