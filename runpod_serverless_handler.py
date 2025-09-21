@@ -50,21 +50,36 @@ def load_model():
     try:
         logger.info("Loading ACE-Step model for serverless...")
         
-        # Add ACE-Step to path
-        sys.path.append('/opt/ACE-Step')
+        # Add ACE-Step to path in multiple ways
+        ace_step_path = '/opt/ACE-Step'
+        if ace_step_path not in sys.path:
+            sys.path.insert(0, ace_step_path)
         
-        # Import after path is set
-        from ace_step.inference import InferencePipeline
+        # Change to ACE-Step directory for relative imports
+        import os
+        original_dir = os.getcwd()
+        os.chdir(ace_step_path)
         
-        # Initialize pipeline
-        model = InferencePipeline()
+        # Import ACE-Step pipeline using correct path
+        from acestep.pipeline_ace_step import ACEStepPipeline
+        
+        # Initialize pipeline with checkpoint directory
+        checkpoint_dir = "/opt/ACE-Step"  # Use the installed directory
+        model = ACEStepPipeline(checkpoint_dir)
         logger.info("Model loaded successfully!")
+        
+        # Restore original directory
+        os.chdir(original_dir)
         
         return model
         
     except Exception as e:
         logger.error(f"Model loading failed: {str(e)}")
         logger.error(traceback.format_exc())
+        # Also log the current Python path for debugging
+        logger.error(f"Python path: {sys.path}")
+        logger.error(f"Current directory: {os.getcwd()}")
+        logger.error(f"ACE-Step directory contents: {os.listdir('/opt/ACE-Step') if os.path.exists('/opt/ACE-Step') else 'Not found'}")
         raise Exception(f"Failed to load model: {str(e)}")
 
 def generate_music(job_input: Dict[str, Any]) -> Dict[str, Any]:
@@ -99,28 +114,22 @@ def generate_music(job_input: Dict[str, Any]) -> Dict[str, Any]:
         # Load model (will use cache if available)
         pipeline = load_model()
         
-        # Generate music
-        audio_array = pipeline.generate(
+        # Generate music using ACEStepPipeline
+        audio_path, sample_rate, used_seed = pipeline.generate_audio(
             prompt=prompt,
-            duration=duration,
-            seed=seed,
+            duration=int(duration),  # Duration should be int
+            infer_steps=num_inference_steps,
             guidance_scale=guidance_scale,
-            num_inference_steps=num_inference_steps
+            omega_scale=1.0,  # Default omega scale
+            seed=seed,
         )
         
-        # Convert to base64 WAV
-        import soundfile as sf
+        # Convert audio file to base64
+        with open(audio_path, "rb") as audio_file:
+            audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
         
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
-            # ACE-Step typically outputs at 16kHz
-            sf.write(tmp_file.name, audio_array, 16000)
-            
-            # Read and encode
-            with open(tmp_file.name, "rb") as audio_file:
-                audio_base64 = base64.b64encode(audio_file.read()).decode('utf-8')
-            
-            # Cleanup
-            os.unlink(tmp_file.name)
+        # Cleanup the temporary audio file
+        os.unlink(audio_path)
         
         generation_time = time.time() - start_time
         
@@ -131,8 +140,8 @@ def generate_music(job_input: Dict[str, Any]) -> Dict[str, Any]:
             "generation_time": generation_time,
             "prompt": prompt,
             "duration": duration,
-            "seed": seed,
-            "audio_length_seconds": len(audio_array) / 16000,
+            "seed": used_seed,
+            "sample_rate": sample_rate,
             "success": True
         }
         
