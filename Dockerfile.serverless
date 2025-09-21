@@ -1,5 +1,5 @@
 # Serverless Dockerfile for RunPod
-FROM nvidia/cuda:12.6-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
 
 # Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -30,7 +30,7 @@ COPY runpod_serverless_requirements.txt .
 
 # Install RunPod and dependencies
 RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 && \
+    pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
     pip3 install --no-cache-dir -r requirements.txt && \
     pip3 install --no-cache-dir -r runpod_serverless_requirements.txt
 

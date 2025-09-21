@@ -1,0 +1,54 @@
+# Final, Corrected Serverless Dockerfile for RunPod
+# Using a specific, available NVIDIA CUDA base image
+FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
+
+# Set environment variables with correct syntax
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HF_HUB_ENABLE_HF_TRANSFER=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# Install all system dependencies in a single, correctly formatted RUN command
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3-pip \
+    python3-dev \
+    build-essential \
+    git \
+    curl \
+    wget \
+    ffmpeg \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/python3 /usr/bin/python
+
+# Set the working directory
+WORKDIR /opt
+
+# Install Python packages
+# First, upgrade pip and install PyTorch for the correct CUDA version (cu118 for CUDA 11.8)
+RUN pip3 install --no-cache-dir --upgrade pip && \
+    pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# Copy the requirements files
+COPY requirements.txt .
+COPY runpod_serverless_requirements.txt .
+
+# Install the Python package requirements
+RUN pip3 install --no-cache-dir -r requirements.txt && \
+    pip3 install --no-cache-dir -r runpod_serverless_requirements.txt
+
+# Clone and install the ACE-Step repository
+RUN git clone https://github.com/ace-step/ACE-Step.git && \
+    cd ACE-Step && \
+    pip3 install --no-cache-dir -e .
+
+# Copy the serverless handler script
+COPY runpod_serverless_handler.py /opt/handler.py
+
+# Create a directory for model caching on persistent storage
+RUN mkdir -p /runpod-volume
+
+# Set the default command to run the serverless handler
+CMD ["python3", "/opt/handler.py"]
+

@@ -1,0 +1,31 @@
+# Ultra-simple Dockerfile for RunPod Serverless
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    wget \
+    curl \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install RunPod SDK
+RUN pip install runpod
+
+# Set working directory
+WORKDIR /app
+
+# Copy only the handler file
+COPY runpod_serverless_handler.py .
+COPY requirements.txt .
+
+# Install basic dependencies
+RUN pip install fastapi uvicorn pydantic numpy transformers diffusers huggingface_hub scipy librosa soundfile einops accelerate omegaconf safetensors
+
+# Clone ACE-Step (will be done at runtime for latest version)
+RUN git clone https://github.com/ace-step/ACE-Step.git && \
+    cd ACE-Step && \
+    pip install -e .
+
+# Start the handler
+CMD ["python", "runpod_serverless_handler.py"]
