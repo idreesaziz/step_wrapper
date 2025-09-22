@@ -1,10 +1,11 @@
 """
 RunPod Serverless Handler for ACE-Step Music Generator
-Optimized for serverless deployment with cold start handling
+Based on official trainer-api.py implementation
 """
 
 import runpod
 import torch
+import torchaudio
 import logging
 import os
 import sys
@@ -12,7 +13,9 @@ import base64
 import tempfile
 import time
 import traceback
+import random
 from typing import Dict, Any, Optional
+from datetime import datetime
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -21,26 +24,8 @@ logger = logging.getLogger(__name__)
 # Global model variable
 model = None
 
-def download_model():
-    """Download and cache the model"""
-    try:
-        logger.info("Downloading ACE-Step model...")
-        from huggingface_hub import snapshot_download
-        
-        # Download model to cache directory
-        model_path = snapshot_download(
-            repo_id="ACE-Step/ACE-Step-v1-3.5B",
-            cache_dir="/runpod-volume",  # Use persistent storage if available
-            resume_download=True
-        )
-        logger.info(f"Model downloaded to: {model_path}")
-        return model_path
-    except Exception as e:
-        logger.error(f"Model download failed: {e}")
-        raise
-
 def load_model():
-    """Load ACE-Step model (with caching for serverless)"""
+    """Load ACE-Step model - EXACTLY like trainer-api.py"""
     global model
     
     if model is not None:
@@ -50,61 +35,52 @@ def load_model():
     try:
         logger.info("Loading ACE-Step model for serverless...")
         
-        # Add ACE-Step to path in multiple ways
+        # Add ACE-Step to path
         ace_step_path = '/opt/ACE-Step'
         if ace_step_path not in sys.path:
             sys.path.insert(0, ace_step_path)
         
-        # Change to ACE-Step directory for relative imports
-        import os
+        # Change to ACE-Step directory for imports
         original_dir = os.getcwd()
         os.chdir(ace_step_path)
         
-        # Import required modules
+        # Import EXACTLY like trainer-api.py
         from acestep.pipeline_ace_step import ACEStepPipeline
         from acestep.apg_guidance import apg_forward, MomentumBuffer
         from transformers import AutoTokenizer
-        import random
         from diffusers.utils.torch_utils import randn_tensor
         from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import retrieve_timesteps
         from acestep.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
         
-        # Create InferencePipeline wrapper class (copied from trainer-api.py)
+        # InferencePipeline EXACTLY from trainer-api.py (lines 35-211)
         class InferencePipeline:
             def __init__(self, checkpoint_dir: str, device: str = "cuda"):
                 self.device = torch.device(device if torch.cuda.is_available() else "cpu")
                 logger.info(f"Initializing model on device: {self.device}")
 
-                # Load the ACEStepPipeline with consistent dtype
+                # Load the ACEStepPipeline
                 self.acestep_pipeline = ACEStepPipeline(checkpoint_dir)
                 self.acestep_pipeline.load_checkpoint(checkpoint_dir)
-                
-                # Get the pipeline's dtype for consistency
-                self.dtype = self.acestep_pipeline.dtype
-                logger.info(f"Using model dtype: {self.dtype}")
 
-                # Initialize components with consistent dtype (don't force float conversion)
-                self.transformers = self.acestep_pipeline.ace_step_transformer.to(self.device).eval()
-                self.dcae = self.acestep_pipeline.music_dcae.to(self.device).eval() 
-                self.text_encoder_model = self.acestep_pipeline.text_encoder_model.to(self.device).eval()
+                # Initialize components EXACTLY like trainer-api.py
+                self.transformers = self.acestep_pipeline.ace_step_transformer.float().to(self.device).eval()
+                self.dcae = self.acestep_pipeline.music_dcae.float().to(self.device).eval()
+                self.text_encoder_model = self.acestep_pipeline.text_encoder_model.float().to(self.device).eval()
                 self.text_tokenizer = self.acestep_pipeline.text_tokenizer
-
-                # Initialize scheduler
-                self.scheduler = FlowMatchEulerDiscreteScheduler()
 
                 # Ensure no gradients are computed
                 self.transformers.requires_grad_(False)
                 self.dcae.requires_grad_(False)
                 self.text_encoder_model.requires_grad_(False)
 
-                # Initialize scheduler exactly like trainer-api.py
+                # Initialize scheduler EXACTLY like trainer-api.py
                 self.scheduler = FlowMatchEulerDiscreteScheduler(
                     num_train_timesteps=1000,
                     shift=3.0,
                 )
                 
             def get_text_embeddings(self, texts, device, text_max_length=256):
-                """Get text embeddings from prompts - exactly like trainer-api.py"""
+                """EXACTLY from trainer-api.py lines 60-74"""
                 inputs = self.text_tokenizer(
                     texts,
                     return_tensors="pt",
@@ -119,28 +95,79 @@ def load_model():
                 attention_mask = inputs["attention_mask"]
                 return last_hidden_states, attention_mask
 
-            def diffusion_process(self, duration, encoder_text_hidden_states, text_attention_mask, 
+            def diffusion_process(self, duration, encoder_text_hidden_states, text_attention_mask,
                                 speaker_embds, lyric_token_ids, lyric_mask, random_generator=None,
                                 infer_steps=60, guidance_scale=15.0, omega_scale=10.0):
-                """Simplified diffusion process wrapper"""
-                # Use ACEStepPipeline's text2music_diffusion_process
-                pred_latents = self.acestep_pipeline.text2music_diffusion_process(
-                    duration=duration,
-                    encoder_text_hidden_states=encoder_text_hidden_states,
-                    text_attention_mask=text_attention_mask,
-                    speaker_embds=speaker_embds,
-                    lyric_token_ids=lyric_token_ids,
-                    lyric_mask=lyric_mask,
-                    random_generators=[random_generator] if random_generator else None,
-                    infer_steps=infer_steps,
-                    guidance_scale=guidance_scale,
-                    omega_scale=omega_scale,
+                """EXACTLY from trainer-api.py lines 88-153"""
+                do_classifier_free_guidance = guidance_scale > 1.0
+                device = encoder_text_hidden_states.device
+                dtype = encoder_text_hidden_states.dtype
+                bsz = encoder_text_hidden_states.shape[0]
+
+                timesteps, num_inference_steps = retrieve_timesteps(
+                    self.scheduler, num_inference_steps=infer_steps, device=device
                 )
-                return pred_latents
+
+                frame_length = int(duration * 44100 / 512 / 8)
+                target_latents = randn_tensor(
+                    shape=(bsz, 8, 16, frame_length),
+                    generator=random_generator,
+                    device=device,
+                    dtype=dtype,
+                )
+                attention_mask = torch.ones(bsz, frame_length, device=device, dtype=dtype)
+
+                if do_classifier_free_guidance:
+                    attention_mask = torch.cat([attention_mask] * 2, dim=0)
+                    encoder_text_hidden_states = torch.cat(
+                        [encoder_text_hidden_states, torch.zeros_like(encoder_text_hidden_states)],
+                        0,
+                    )
+                    text_attention_mask = torch.cat([text_attention_mask] * 2, dim=0)
+                    speaker_embds = torch.cat([speaker_embds, torch.zeros_like(speaker_embds)], 0)
+                    lyric_token_ids = torch.cat([lyric_token_ids, torch.zeros_like(lyric_token_ids)], 0)
+                    lyric_mask = torch.cat([lyric_mask, torch.zeros_like(lyric_mask)], 0)
+
+                momentum_buffer = MomentumBuffer()
+
+                for t in timesteps:
+                    latent_model_input = (
+                        torch.cat([target_latents] * 2) if do_classifier_free_guidance else target_latents
+                    )
+                    timestep = t.expand(latent_model_input.shape[0])
+                    with torch.no_grad():
+                        noise_pred = self.transformers(
+                            hidden_states=latent_model_input,
+                            attention_mask=attention_mask,
+                            encoder_text_hidden_states=encoder_text_hidden_states,
+                            text_attention_mask=text_attention_mask,
+                            speaker_embeds=speaker_embds,
+                            lyric_token_idx=lyric_token_ids,
+                            lyric_mask=lyric_mask,
+                            timestep=timestep,
+                        ).sample
+
+                    if do_classifier_free_guidance:
+                        noise_pred_with_cond, noise_pred_uncond = noise_pred.chunk(2)
+                        noise_pred = apg_forward(
+                            pred_cond=noise_pred_with_cond,
+                            pred_uncond=noise_pred_uncond,
+                            guidance_scale=guidance_scale,
+                            momentum_buffer=momentum_buffer,
+                        )
+
+                    target_latents = self.scheduler.step(
+                        model_output=noise_pred,
+                        timestep=t,
+                        sample=target_latents,
+                        omega=omega_scale,
+                    )[0]
+
+                return target_latents
                 
             def generate_audio(self, prompt: str, duration: int, infer_steps: int, 
-                             guidance_scale: float, omega_scale: float, seed=None):
-                """Generate audio from text prompt (copied from trainer-api.py)"""
+                             guidance_scale: float, omega_scale: float, seed: Optional[int]):
+                """EXACTLY from trainer-api.py lines 163-211"""
                 # Set random seed
                 if seed is not None:
                     random.seed(seed)
@@ -154,7 +181,7 @@ def load_model():
 
                 # Get text embeddings
                 encoder_text_hidden_states, text_attention_mask = self.get_text_embeddings(
-                    prompt, self.device
+                    [prompt], self.device
                 )
 
                 # Dummy speaker embeddings and lyrics (since not provided in API request)
@@ -177,27 +204,25 @@ def load_model():
                     omega_scale=omega_scale,
                 )
 
-                # Decode latents to audio  
-                audio_lengths = torch.tensor([int(duration * 44100)], device=self.device, dtype=torch.long)
+                # Decode latents to audio - EXACTLY trainer-api.py line 199
+                audio_lengths = torch.tensor([int(duration * 44100)], device=self.device)
                 sr, pred_wavs = self.dcae.decode(pred_latents, audio_lengths=audio_lengths, sr=48000)
 
-                # Save audio
-                import tempfile
-                import torchaudio
-                from datetime import datetime
-                
+                # Save audio - EXACTLY trainer-api.py lines 204-207
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                temp_path = tempfile.mktemp(suffix=f"_{timestamp}_{seed}.wav")
-                torchaudio.save(temp_path, pred_wavs.float().cpu(), sr)
+                output_dir = "generated_audio"
+                os.makedirs(output_dir, exist_ok=True)
+                audio_path = f"{output_dir}/generated_{timestamp}_{seed}.wav"
+                torchaudio.save(audio_path, pred_wavs.float().cpu(), sr)
 
-                return temp_path, sr, seed
+                return audio_path, sr, seed
         
-        # Initialize the wrapper
+        # Initialize exactly like trainer-api.py startup
         checkpoint_dir = "/opt/ACE-Step"
-        model = InferencePipeline(checkpoint_dir)
+        model = InferencePipeline(checkpoint_dir=checkpoint_dir)
         logger.info("Model loaded successfully!")
         
-        # Restore original directory
+        # Restore directory
         os.chdir(original_dir)
         
         return model
@@ -205,10 +230,6 @@ def load_model():
     except Exception as e:
         logger.error(f"Model loading failed: {str(e)}")
         logger.error(traceback.format_exc())
-        # Also log the current Python path for debugging
-        logger.error(f"Python path: {sys.path}")
-        logger.error(f"Current directory: {os.getcwd()}")
-        logger.error(f"ACE-Step directory contents: {os.listdir('/opt/ACE-Step') if os.path.exists('/opt/ACE-Step') else 'Not found'}")
         raise Exception(f"Failed to load model: {str(e)}")
 
 def generate_music(job_input: Dict[str, Any]) -> Dict[str, Any]:
