@@ -22,10 +22,7 @@ curl -X POST "https://api.runpod.ai/v2/9eb182ubs5j0jf/runsync" \
   -d '{
     "input": {
       "prompt": "upbeat electronic dance music",
-      "duration": 30.0,
-      "guidance_scale": 8.0,
-      "num_inference_steps": 20,
-      "seed": 42
+      "duration": 30.0
     }
   }'
 ```
@@ -47,14 +44,12 @@ headers = {
     "Content-Type": "application/json"
 }
 
-# Request payload
+# Request payload - Simple 3-parameter interface
 payload = {
     "input": {
         "prompt": "peaceful piano melody with nature sounds",
-        "duration": 20.0,
-        "guidance_scale": 7.5,
-        "num_inference_steps": 25,
-        "seed": 12345
+        "lyrics": "[verse]\nGentle winds through the trees\n[chorus]\nNature's symphony of peace",
+        "duration": 20.0
     }
 }
 
@@ -99,29 +94,30 @@ else:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
+| `lyrics` | string | "" | Song lyrics with optional structure tags ([verse], [chorus], etc.) |
 | `duration` | float | 30.0 | Length of generated audio in seconds (1-240) |
-| `guidance_scale` | float | 8.0 | Controls adherence to prompt (1.0-20.0) |
-| `num_inference_steps` | integer | 20 | Number of denoising steps (10-100) |
-| `seed` | integer | random | Random seed for reproducible results |
 
 ### Parameter Guidelines
 
+#### Prompt (Required)
+- **Description**: Text description of the music you want to generate
+- **Examples**: 
+  - "upbeat electronic dance music"
+  - "slow romantic piano ballad"
+  - "heavy metal guitar with drums"
+  - "jazz saxophone with walking bass"
+
+#### Lyrics (Optional)
+- **Format**: Plain text or with structure tags
+- **Structure Tags**: Use `[verse]`, `[chorus]`, `[bridge]`, `[outro]` etc.
+- **Example**: `"[verse]\nWalking down the street tonight\n[chorus]\nThis is our moment"`
+- **Note**: When lyrics are provided, the model automatically optimizes for vocal generation
+
 #### Duration
 - **Range**: 1.0 to 240.0 seconds
+- **Default**: 30.0 seconds
 - **Recommended**: 10-60 seconds for optimal quality
 - **Note**: Longer durations increase generation time proportionally
-
-#### Guidance Scale
-- **Range**: 1.0 to 20.0
-- **Low (1.0-5.0)**: More creative, less adherent to prompt
-- **Medium (6.0-10.0)**: Balanced creativity and prompt adherence
-- **High (11.0-20.0)**: Strict prompt adherence, less variation
-
-#### Inference Steps
-- **Range**: 10 to 100 steps
-- **Fast (10-20)**: Quick generation, good quality
-- **Balanced (20-40)**: Good quality/speed tradeoff
-- **High Quality (40-100)**: Best quality, slower generation
 
 ## Response Format
 

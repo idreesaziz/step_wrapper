@@ -47,6 +47,7 @@ def load_model():
         # Import EXACTLY like trainer-api.py
         from acestep.pipeline_ace_step import ACEStepPipeline
         from acestep.apg_guidance import apg_forward, MomentumBuffer
+        from acestep.models.lyrics_utils.lyric_tokenizer import VoiceBpeTokenizer
         from transformers import AutoTokenizer
         from diffusers.utils.torch_utils import randn_tensor
         from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import retrieve_timesteps
@@ -67,6 +68,7 @@ def load_model():
                 self.dcae = self.acestep_pipeline.music_dcae.float().to(self.device).eval()
                 self.text_encoder_model = self.acestep_pipeline.text_encoder_model.float().to(self.device).eval()
                 self.text_tokenizer = self.acestep_pipeline.text_tokenizer
+                self.lyric_tokenizer = VoiceBpeTokenizer()  # NEW: Add lyric tokenizer for lyrics support
 
                 # Ensure no gradients are computed
                 self.transformers.requires_grad_(False)
@@ -80,20 +82,57 @@ def load_model():
                 )
                 
             def get_text_embeddings(self, texts, device, text_max_length=256):
-                """EXACTLY from trainer-api.py lines 60-74"""
-                inputs = self.text_tokenizer(
+                """EXACTLY from trainer-api.py lines 38-87"""
+                text_inputs = self.tokenizer(
                     texts,
                     return_tensors="pt",
-                    padding=True,
-                    truncation=True,
                     max_length=text_max_length,
+                    truncation=True,
+                    padding=True,
                 )
-                inputs = {key: value.to(device) for key, value in inputs.items()}
+                input_ids = text_inputs.input_ids.to(device)
+                attention_mask = text_inputs.attention_mask.to(device)
+                
                 with torch.no_grad():
-                    outputs = self.text_encoder_model(**inputs)
-                    last_hidden_states = outputs.last_hidden_state
-                attention_mask = inputs["attention_mask"]
-                return last_hidden_states, attention_mask
+                    text_embeddings = self.text_encoder(
+                        input_ids=input_ids, attention_mask=attention_mask
+                    ).last_hidden_state
+                
+                return text_embeddings, attention_mask
+
+            def tokenize_lyrics(self, lyrics: str):
+                """Tokenize lyrics EXACTLY like official implementation"""
+                import re
+                
+                # Structure pattern for [verse], [chorus], etc.
+                structure_pattern = re.compile(r"\[.*?\]")
+                
+                lines = lyrics.split("\n")
+                lyric_token_idx = [261]  # Start token like official code
+                
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        lyric_token_idx += [2]  # Line break token
+                        continue
+
+                    # Detect language (simplified - default to English for serverless)
+                    lang = "en"
+
+                    try:
+                        # Handle structure markers like [Verse], [Chorus] 
+                        if structure_pattern.match(line):
+                            token_idx = self.lyric_tokenizer.encode(line, "en")
+                        else:
+                            token_idx = self.lyric_tokenizer.encode(line, lang)
+                        
+                        lyric_token_idx = lyric_token_idx + token_idx + [2]  # Add line break
+                    except Exception as e:
+                        logger.warning(f"Lyric tokenization error for line '{line}': {e}")
+                        # Skip problematic lines
+                        continue
+
+                return lyric_token_idx
 
             def diffusion_process(self, duration, encoder_text_hidden_states, text_attention_mask,
                                 speaker_embds, lyric_token_ids, lyric_mask, random_generator=None,
@@ -165,9 +204,11 @@ def load_model():
 
                 return target_latents
                 
-            def generate_audio(self, prompt: str, duration: int, infer_steps: int, 
-                             guidance_scale: float, omega_scale: float, seed: Optional[int]):
-                """EXACTLY from trainer-api.py lines 163-211"""
+            def generate_audio(self, prompt: str, duration: int, infer_steps: int,
+                             guidance_scale: float, omega_scale: float, seed: Optional[int],
+                             lyrics: str = "", guidance_scale_lyric: float = 0.0, 
+                             guidance_scale_text: float = 0.0, use_erg_lyric: bool = True):
+                """EXACTLY from trainer-api.py lines 167-217 WITH lyrics support"""
                 # Set random seed
                 if seed is not None:
                     random.seed(seed)
@@ -184,13 +225,28 @@ def load_model():
                     [prompt], self.device
                 )
 
-                # Dummy speaker embeddings and lyrics (since not provided in API request)
+                # Prepare speaker embeddings and lyrics 
                 bsz = 1
                 speaker_embds = torch.zeros(bsz, 512, device=self.device, dtype=encoder_text_hidden_states.dtype)
-                lyric_token_ids = torch.zeros(bsz, 256, device=self.device, dtype=torch.long)
-                lyric_mask = torch.zeros(bsz, 256, device=self.device, dtype=torch.long)
-
-                # Run diffusion process
+                
+                # Process lyrics if provided - EXACTLY like official implementation
+                if lyrics and lyrics.strip():
+                    lyric_token_idx = self.tokenize_lyrics(lyrics)
+                    lyric_mask = [1] * len(lyric_token_idx)
+                    
+                    # Pad or truncate to fixed length (4096 max like in official code)
+                    max_lyric_length = 4096
+                    if len(lyric_token_idx) > max_lyric_length:
+                        lyric_token_idx = lyric_token_idx[:max_lyric_length]
+                        lyric_mask = lyric_mask[:max_lyric_length]
+                    
+                    # Convert to tensors and pad to batch
+                    lyric_token_ids = torch.tensor(lyric_token_idx, device=self.device, dtype=torch.long).unsqueeze(0)
+                    lyric_mask = torch.tensor(lyric_mask, device=self.device, dtype=torch.long).unsqueeze(0)
+                else:
+                    # Empty lyrics (instrumental)
+                    lyric_token_ids = torch.zeros(bsz, 256, device=self.device, dtype=torch.long)
+                    lyric_mask = torch.zeros(bsz, 256, device=self.device, dtype=torch.long)                # Run diffusion process
                 pred_latents = self.diffusion_process(
                     duration=duration,
                     encoder_text_hidden_states=encoder_text_hidden_states,
@@ -234,37 +290,41 @@ def load_model():
 
 def generate_music(job_input: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Generate music from text prompt
+    Generate music from text prompt and optional lyrics
     
     Expected input:
     {
-        "prompt": "upbeat electronic music",
-        "duration": 30.0,
-        "seed": 42,
-        "guidance_scale": 3.0,
-        "num_inference_steps": 50
+        "prompt": "upbeat electronic music",        // REQUIRED: Music description
+        "lyrics": "song lyrics with structure tags", // OPTIONAL: Song lyrics
+        "duration": 30.0                            // OPTIONAL: Audio length in seconds (1-240)
     }
     """
     
     start_time = time.time()
     
     try:
-        # Parse input parameters
+        # Parse input parameters - keeping it simple with just 3 parameters
         prompt = job_input.get("prompt", "")
         if not prompt:
             return {"error": "Prompt is required"}
         
-        duration = job_input.get("duration", 30.0)
-        seed = job_input.get("seed", None)
-        guidance_scale = job_input.get("guidance_scale", 3.0)
-        num_inference_steps = job_input.get("num_inference_steps", 50)
+        lyrics = job_input.get("lyrics", "")  # Optional lyrics support
+        duration = job_input.get("duration", 30.0)  # Default 30 seconds
         
-        logger.info(f"Generating music: '{prompt}' ({duration}s)")
+        # Use sensible defaults for internal parameters
+        seed = None  # Always random generation
+        guidance_scale = 3.0  # Good default for quality
+        guidance_scale_lyric = 0.0 if not lyrics else 2.0  # Auto-enable if lyrics provided
+        guidance_scale_text = 0.0  # Keep simple
+        use_erg_lyric = True  # Always use ERG for better quality
+        num_inference_steps = 50  # Good quality/speed balance
+        
+        logger.info(f"Generating music: '{prompt}' ({duration}s) with lyrics: {bool(lyrics)}")
         
         # Load model (will use cache if available)
         pipeline = load_model()
         
-        # Generate music using ACEStepPipeline
+        # Generate music using ACEStepPipeline with lyrics support
         audio_path, sample_rate, used_seed = pipeline.generate_audio(
             prompt=prompt,
             duration=int(duration),  # Duration should be int
@@ -272,6 +332,10 @@ def generate_music(job_input: Dict[str, Any]) -> Dict[str, Any]:
             guidance_scale=guidance_scale,
             omega_scale=1.0,  # Default omega scale
             seed=seed,
+            lyrics=lyrics,                          # NEW: Pass lyrics
+            guidance_scale_lyric=guidance_scale_lyric,  # NEW: Lyric guidance
+            guidance_scale_text=guidance_scale_text,    # NEW: Text guidance  
+            use_erg_lyric=use_erg_lyric,               # NEW: ERG lyric setting
         )
         
         # Convert audio file to base64
@@ -289,9 +353,13 @@ def generate_music(job_input: Dict[str, Any]) -> Dict[str, Any]:
             "audio_base64": audio_base64,
             "generation_time": generation_time,
             "prompt": prompt,
+            "lyrics": lyrics,                       # NEW: Include lyrics in response
             "duration": duration,
             "seed": used_seed,
             "sample_rate": sample_rate,
+            "guidance_scale_lyric": guidance_scale_lyric,  # NEW: Include lyric guidance used
+            "guidance_scale_text": guidance_scale_text,    # NEW: Include text guidance used
+            "use_erg_lyric": use_erg_lyric,               # NEW: Include ERG lyric setting used
             "success": True
         }
         
